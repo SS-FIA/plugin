@@ -1,11 +1,10 @@
 {
-	"id": "sample-plugin",
-	"name": "Sample Plugin",
-	"version": "1.0.0",
-	"minAppVersion": "0.15.0",
-	"description": "Demonstrates some of the capabilities of the Obsidian API.",
-	"author": "Obsidian",
-	"authorUrl": "https://obsidian.md",
-	"fundingUrl": "https://obsidian.md/pricing",
-	"isDesktopOnly": false
+  "id": "vault-sync-dropbox",
+  "name": "Vault Sync for Dropbox",
+  "version": "0.2.0",
+  "minAppVersion": "1.4.0",
+  "description": "ObsidianのvaultをDropboxと双方向同期（iOS対応）",
+  "author": "RegLex AI",
+  "authorUrl": "",
+  "isDesktopOnly": false
 }
