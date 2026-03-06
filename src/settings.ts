@@ -123,10 +123,10 @@ export class DropboxSyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("同期先 Dropboxフォルダ")
-      .setDesc("例: /ObsidianVault")
+      .setDesc("Dropbox内の同期先フォルダをスラッシュ始まりで入力してください（例: /ObsidianVault）")
       .addText((text) =>
         text
-          .setPlaceholder("/ObsidianVault")
+          .setPlaceholder("/ObsidianVault（任意のフォルダ名に変更できます）")
           .setValue(this.plugin.settings.dropboxFolder)
           .onChange(async (value) => {
             let v = value.trim();

@@ -7,6 +7,7 @@
 	"scripts": {
 		"dev": "node esbuild.config.mjs",
 		"build": "node auto-patch.mjs && tsc -noEmit --skipLibCheck && node esbuild.config.mjs production",
+		"release": "bun run build && git add manifest.json versions.json && git commit -m 'chore: bump version' && node release-publish.mjs",
 		"version": "node version-bump.mjs && git add manifest.json versions.json",
 		"lint": "eslint .",
 		"sync-plugin": "node sync-plugin.mjs",

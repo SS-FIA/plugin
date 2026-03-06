@@ -256,19 +256,11 @@ async flushSyncState(): Promise<void> {
         this.onProgress?.(cur, tot);
       });
 
-      // ローカル → Dropbox（存在しないもの、またはローカルが新しいもの）
+      // ローカル → Dropbox（存在しないもの）
       for (const local of localFiles) {
         if (this.isExcluded(local.path)) continue;
-        const dbEntry = dropboxMap.get(local.path.toLowerCase());
-        if (!dbEntry) {
+        if (!dropboxMap.has(local.path.toLowerCase())) {
           await this.uploadFile(local.path, result);
-        } else {
-          const dbMtime = dbEntry.client_modified
-            ? new Date(dbEntry.client_modified).getTime()
-            : 0;
-          if (local.mtime > dbMtime) {
-            await this.uploadFile(local.path, result);
-          }
         }
       }
 
@@ -477,7 +469,6 @@ async flushSyncState(): Promise<void> {
     } catch (e) {
       const msg = `upload failed: ${vaultPath} – ${e}`;
       if (result) result.errors.push(msg);
-      this.logger.log("error", "upload", msg, vaultPath, e);
       console.error("[SyncEngine]", msg);
     }
   }
@@ -498,12 +489,15 @@ async flushSyncState(): Promise<void> {
       if (existing instanceof TFile) {
         await this.app.vault.modifyBinary(existing, data);
       } else {
-        const physicallyExists = await this.app.vault.adapter.exists(normalizedPath);
-        if (physicallyExists) {
-          // Dropboxアプリが先に置いたファイルを一旦削除し、vault.createBinaryで正規登録
-          await this.app.vault.adapter.remove(normalizedPath);
+        try {
+          await this.app.vault.createBinary(normalizedPath, data);
+        } catch (e) {
+          if (/already exists/i.test(String(e))) {
+            await this.app.vault.adapter.writeBinary(normalizedPath, data);
+          } else {
+            throw e;
+          }
         }
-        await this.app.vault.createBinary(normalizedPath, data);
       }
 
       if (dbEntry?.id) {
@@ -523,13 +517,12 @@ async flushSyncState(): Promise<void> {
       if (result) result.errors.push(msg);
       console.error("[SyncEngine]", msg);
     } finally {
-      window.setTimeout(() => this.syncingPaths.delete(vaultPath), this.UPLOAD_DEBOUNCE_MS + 500);
+      window.setTimeout(() => this.syncingPaths.delete(vaultPath), 500);
     }
   }
 
   private async handleLocalDelete(vaultPath: string): Promise<void> {
     if (this.isExcluded(vaultPath)) return;
-    if (this.syncingPaths.has(vaultPath)) return; // ダウンロード中の削除イベントは無視
 
     // tombstone記録（state.jsonへ）
     this.syncState.tombstones[vaultPath] = Date.now();
