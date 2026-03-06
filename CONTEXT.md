@@ -1,11 +1,11 @@
 # vault-sync-dropbox CONTEXT
-## 作成日: 2026-03-07（セッション終了時点）
+## 作成日: 2026-03-07（セッション2終了時点）
 
 ---
 
 ## 現在の状態
 
-**バージョン: 0.4.25**
+**バージョン: 0.4.27**
 **双方向同期: 完全動作確認済み**
 
 | 機能 | 状態 |
@@ -15,46 +15,56 @@
 | 双方向ファイル編集同期 | ✅ 動作確認済み |
 | 双方向ファイル削除同期 | ✅ 動作確認済み |
 | 文字化け | ✅ 解消済み |
+| 競合コピー除外 | ✅ v0.4.27で実装済み |
+| tombstone自動修復 | ✅ v0.4.27で実装済み |
 
 ---
 
-## 今回セッションで修正したバグ（patch1〜patch8）
+## セッション2で実装した修正
 
-### patch1: fullSync アップロード漏れ（同期不安定の主因）
+### patch A: Dropbox競合コピー除外
 **ファイル:** `src/sync-engine.ts`
-**問題:** `fullSync()`のローカル→Dropboxループが「Dropboxに存在しない場合のみ」アップロードしており、「ローカルが新しい場合」を無視していた
-**修正:** `local.mtime > dbMtime` の条件を追加
+**問題:** Dropboxアプリが自動生成する「KのMac mini の競合コピー 2026-03-07」形式のファイルがVaultに流入していた。`excludedFolders`では防げない。
+**修正:** `isConflictCopy()` メソッドと `CONFLICT_COPY_RE` 正規表現を追加。`isExcluded()` の冒頭でガードすることで全入口（upload/download/fullSync/incrementalSync）を一括遮断。
+```typescript
+private static readonly CONFLICT_COPY_RE =
+  /\(.*?(?:の競合コピー|のコンフリクトコピー|'s conflicted copy)\s+\d{4}-\d{2}-\d{2}\)/i;
+```
 
-### patch2: syncingPaths 競合（文字化けの関与）
+### patch B: tombstone自動修復（repairTombstones）
 **ファイル:** `src/sync-engine.ts`
-**問題:** ダウンロード完了後のsyncingPathsガード解除が500msで早すぎ、debounce(3000ms)経由のアップロードと競合
-**修正:** `500ms` → `UPLOAD_DEBOUNCE_MS + 500ms`（3500ms）に延長
+**問題:** state.jsonに不正tombstoneが蓄積すると、Dropboxに存在するファイルが永続的にスキップされ続ける。
+**修正:** 3段構えで対処：
+1. `repairTombstones(dropboxMap)` — fullSync時にdropboxMapと照合し、`dbMtime >= deletedAt` のtombstoneを自動除去
+2. `downloadFile()` 成功時にtombstone残留チェック＆削除
+3. 既存の `gcTombstones()`（30日TTL）はそのまま維持
 
-### patch3→patch5: downloadFile の再構築
-**ファイル:** `src/sync-engine.ts`
-**問題:** Dropboxアプリが先にファイルをディスクに配置した場合、`vault.createBinary()`が"already exists"例外→`adapter.writeBinary()`フォールバック→ObsidianのUIインデックスが更新されない
-**修正:** 物理ファイルの存在を確認→存在すれば`adapter.remove()`で削除→`vault.createBinary()`で正規登録
+---
+
+## セッション1で修正したバグ（patch1〜patch8）の記録は下記の通り
+
+### patch1: fullSync アップロード漏れ
+`local.mtime > dbMtime` 条件追加
+
+### patch2: syncingPaths 競合（文字化け）
+500ms → 3500ms に延長
+
+### patch3→patch5: downloadFile 再構築
+物理ファイル存在確認 → adapter.remove() → vault.createBinary() の順に統一
 
 ### patch6〜7: エラーのlog.json記録
-**ファイル:** `src/sync-engine.ts`
-**修正:** `uploadFile`と`downloadFile`のcatchブロックに`this.logger.log()`を追加（今まで`console.error`のみで握り潰されていた）
+uploadFile/downloadFileのcatchにlogger追加
 
-### patch8: tombstone 競合バグ（Mac→iPad新規ファイル不反映の主因）
-**ファイル:** `src/sync-engine.ts`
-**問題:** `downloadFile`内で`adapter.remove()`→Vaultの`delete`イベント発火→`handleLocalDelete()`がtombstone記録→以降の同期でそのファイルがスキップされ続ける
-**修正:** `handleLocalDelete()`の冒頭に`syncingPaths`ガードを追加
-
-```typescript
-if (this.syncingPaths.has(vaultPath)) return; // ダウンロード中の削除イベントは無視
-```
+### patch8: tombstone 競合バグ
+handleLocalDelete()冒頭にsyncingPathsガード追加
 
 ---
 
 ## 重要な注意事項
 
 ### state.json のリセットについて
-今回の修正適用後、iPadのstate.jsonに不正なtombstoneが蓄積していたため手動削除が必要だった。
-今後、大きな同期ロジック変更後は同様のリセットが必要になる場合がある。
+大きな同期ロジック変更後は不正tombstoneが蓄積する場合がある。
+v0.4.27以降はfullSync時に自動修復されるが、手動リセットが必要な場合：
 
 **削除パス（iPad）:**
 ```
@@ -66,19 +76,19 @@ Dropbox → ObsidianVault-test → .obsidian → plugins → vault-sync-dropbox 
 const TEST_VAULT_PLUGIN_DIR =
   "/Users/t/Library/CloudStorage/Dropbox/ObsidianVault-test/.obsidian/plugins/vault-sync-dropbox";
 ```
-（以前は `60_TOOLS/plugin-test/` という誤ったパスだった。修正済み）
 
 ---
 
 ## 残課題
 
-1. **Dropboxアプリ生成の競合コピー** — `p test (KのMac mini の競合コピー 2026-03-07).md` などDropboxアプリ自身が生成するコピーがVaultを汚染している。excludedFoldersでは防げない。ファイル名パターンで除外するロジックの検討が必要
-2. **state.json の自動修復** — 不正tombstoneを自動検出・削除する仕組みがあると運用が安定する
+現時点で主要課題は解消済み。今後の候補：
+1. **iPad BRAT配布** — BRATを使ったiPadへのプラグインインストール手順の整備
+2. **競合コピーの自動削除** — 現状は除外（無視）のみ。Dropbox側の競合コピーを定期的にDropboxからも削除するか検討
+3. **ログUI** — Open WebUI等からlog.jsonを参照できる軽量UIの検討
 
 ---
 
 ## 次回セッション開始時
-
 ```bash
 cat ~/obsidian-dropbox-plugin/CONTEXT.md
 cd ~/obsidian-dropbox-plugin && git log --oneline -5
