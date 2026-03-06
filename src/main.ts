@@ -32,6 +32,7 @@ export default class DropboxSyncPlugin extends Plugin {
   private syncTimer: ReturnType<typeof setTimeout> | null = null;
   private syncEngine: SyncEngine | null = null;
   private syncLogger!: SyncLogger;
+  settingTab?: DropboxSyncSettingTab;
 
   async onload() {
     console.log("DropboxSync: loading plugin");
@@ -43,7 +44,8 @@ export default class DropboxSyncPlugin extends Plugin {
     this.statusBarItem = this.addStatusBarItem();
     this.updateStatusBar();
 
-    this.addSettingTab(new DropboxSyncSettingTab(this.app, this));
+    this.settingTab = new DropboxSyncSettingTab(this.app, this);
+    this.addSettingTab(this.settingTab);
 
     this.syncLogger = new SyncLogger(this.app.vault.adapter);
     await this.syncLogger.load();
@@ -238,13 +240,14 @@ export default class DropboxSyncPlugin extends Plugin {
 		  try {
 			await this.exchangeCodeForToken(params.code, codeVerifier);
 			new Notice("✅ Dropboxに接続しました");
+			this.settingTab?.display();
 		  } catch (e) {
 			new Notice(`❌ トークン取得失敗：${(e as Error).message}`);
 		  }
 		}
 	  );
 
-	  window.open(authUrl);
+	  window.location.href = authUrl;
 	  new Notice("ブラウザでDropboxの認証を完了してください");
 	}
   

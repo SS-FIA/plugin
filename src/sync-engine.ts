@@ -228,7 +228,7 @@ async flushSyncState(): Promise<void> {
         dropboxFiles
           .filter((e) => e[".tag"] === "file")
           .map((e) => [
-            this.dropboxToVaultPath(e.path_display ?? e.path_lower ?? ""),
+            this.dropboxToVaultPath(e.path_display ?? e.path_lower ?? "").toLowerCase(),
             e,
           ])
       );
@@ -307,7 +307,7 @@ async flushSyncState(): Promise<void> {
           const existing = this.syncState.files[entry.id];
           if (!existing) continue;
 
-          const newVaultPath = this.dropboxToVaultPath(entry.path_display ?? entry.path_lower ?? "");
+          const newVaultPath = this.dropboxToVaultPath(entry.path_display ?? entry.path_lower ?? "").toLowerCase();
           if (existing.path === newVaultPath) continue; // パス変化なし
 
           const oldVaultPath = existing.path;
@@ -333,7 +333,7 @@ async flushSyncState(): Promise<void> {
         for (const entry of res.entries) {
           const vaultPath = this.dropboxToVaultPath(
             entry.path_lower ?? entry.path_display ?? ""
-          );
+          ).toLowerCase();
           if (!vaultPath || this.isExcluded(vaultPath)) continue;
           if (entry[".tag"] === "deleted") {
             await this.handleRemoteDelete(vaultPath, result);
@@ -422,7 +422,7 @@ async flushSyncState(): Promise<void> {
       const batch = entries.slice(i, i + SyncEngine.BATCH_SIZE);
       await Promise.allSettled(
         batch.map(async entry => {
-          const vaultPath = this.dropboxToVaultPath(entry.path_lower ?? entry.path_display ?? "");
+          const vaultPath = this.dropboxToVaultPath(entry.path_lower ?? entry.path_display ?? "").toLowerCase();
           await this.downloadFile(vaultPath, result, entry);
         }),
       );
