@@ -133,33 +133,59 @@ export class SyncEngine {
     }
   }
 
+  /**
+   * fullSync時にdropboxMapと照合し、Dropbox側が新しいtombstoneを除去する。
+   * 例：別デバイスで再作成されたファイルが同期されない問題を自動修復。
+   */
+  private async repairTombstones(
+    dropboxMap: Map<string, DropboxEntry>
+  ): Promise<void> {
+    let repaired = 0;
+    for (const [vaultPath, deletedAt] of Object.entries(this.syncState.tombstones) as [string, number][]) {
+      const dbEntry = dropboxMap.get(vaultPath.toLowerCase());
+      if (!dbEntry) continue; // Dropboxにも存在しない → 正常なtombstone
+      const dbMtime = dbEntry.client_modified
+        ? new Date(dbEntry.client_modified).getTime()
+        : 0;
+      if (dbMtime >= deletedAt) {
+        // Dropbox側が削除後に更新されている → tombstoneは不正、除去して再DLに委ねる
+        delete this.syncState.tombstones[vaultPath];
+        repaired++;
+      }
+    }
+    if (repaired > 0) {
+      this.markDirty();
+      this.logger.log("info", "system", `tombstone repair: cleared ${repaired} stale entries`);
+    }
+  }
+
   private dirtyCount = 0;
-private saveTimer: ReturnType<typeof setTimeout> | null = null;
-private static readonly SAVE_DEBOUNCE_MS = 5_000;
-private static readonly SAVE_BATCH_SIZE = 10;
+  private saveTimer: ReturnType<typeof setTimeout> | null = null;
+  private static readonly SAVE_DEBOUNCE_MS = 5_000;
+  private static readonly SAVE_BATCH_SIZE = 10;
 
-private markDirty(): void {
-  this.dirtyCount++;
-  if (this.dirtyCount >= SyncEngine.SAVE_BATCH_SIZE) {
-    void this.flushSyncState();
-    return;
+  private markDirty(): void {
+    this.dirtyCount++;
+    if (this.dirtyCount >= SyncEngine.SAVE_BATCH_SIZE) {
+      void this.flushSyncState();
+      return;
+    }
+    if (this.saveTimer) clearTimeout(this.saveTimer);
+    this.saveTimer = setTimeout(
+      () => void this.flushSyncState(),
+      SyncEngine.SAVE_DEBOUNCE_MS
+    );
   }
-  if (this.saveTimer) clearTimeout(this.saveTimer);
-  this.saveTimer = setTimeout(
-    () => void this.flushSyncState(),
-    SyncEngine.SAVE_DEBOUNCE_MS
-  );
-}
 
-async flushSyncState(): Promise<void> {
-  if (this.saveTimer) {
-    clearTimeout(this.saveTimer);
-    this.saveTimer = null;
+  async flushSyncState(): Promise<void> {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    if (this.dirtyCount === 0) return;
+    await saveSyncState(this.app.vault, this.syncState);
+    this.dirtyCount = 0;
   }
-  if (this.dirtyCount === 0) return;
-  await saveSyncState(this.app.vault, this.syncState);
-  this.dirtyCount = 0;
-}
 
   // ============================================================
   // インターバル
@@ -232,6 +258,9 @@ async flushSyncState(): Promise<void> {
             e,
           ])
       );
+
+      // 不正tombstone自動修復（Dropbox側が新しければtombstone除去）
+      await this.repairTombstones(dropboxMap);
 
       // Dropbox → ローカル（ダウンロード対象を収集してバッチDL）
       const toDownload: DropboxEntry[] = [];
@@ -516,6 +545,12 @@ async flushSyncState(): Promise<void> {
         this.markDirty();
       }
 
+      // 再ダウンロード完了後にtombstoneが残留していれば除去
+      if (this.syncState.tombstones[vaultPath]) {
+        delete this.syncState.tombstones[vaultPath];
+        this.markDirty();
+      }
+
       if (result) result.downloaded++;
       this.logger.log("info", "download", `downloaded: ${vaultPath}`, vaultPath);
     } catch (e) {
@@ -557,6 +592,11 @@ async flushSyncState(): Promise<void> {
       result.errors.push(`local delete failed: ${vaultPath} – ${e}`);
     }
   }
+
+  // ============================================================
+  // パス変換・除外判定
+  // ============================================================
+
   private vaultToDropboxPath(vaultPath: string): string {
     const base = (this.settings.dropboxFolder ?? "/ObsidianVault").replace(/\/$/, "");
     return `${base}/${vaultPath}`;
@@ -571,7 +611,20 @@ async flushSyncState(): Promise<void> {
     return dropboxPath.slice(base.length + 1);
   }
 
+  // Dropboxアプリ自動生成の競合コピーを検出
+  // 日本語: 「KのMac mini の競合コピー 2026-03-07」
+  // 英語:   "User's conflicted copy 2026-03-07"
+  // スペイン語等も考慮した汎用パターン
+  private static readonly CONFLICT_COPY_RE =
+    /\(.*?(?:の競合コピー|のコンフリクトコピー|'s conflicted copy)\s+\d{4}-\d{2}-\d{2}\)/i;
+
+  private isConflictCopy(vaultPath: string): boolean {
+    const filename = vaultPath.split("/").pop() ?? vaultPath;
+    return SyncEngine.CONFLICT_COPY_RE.test(filename);
+  }
+
   private isExcluded(vaultPath: string): boolean {
+    if (this.isConflictCopy(vaultPath)) return true;
     const excluded = this.settings.excludedFolders ?? [".obsidian", ".trash"];
     return excluded.some(
       (f) => vaultPath.startsWith(f + "/") || vaultPath === f

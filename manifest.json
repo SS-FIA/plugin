@@ -1,7 +1,7 @@
 {
 	"id": "vault-sync-dropbox",
 	"name": "Vault Sync for Dropbox",
-	"version": "0.4.25",
+	"version": "0.4.27",
 	"minAppVersion": "1.4.0",
 	"description": "ObsidianのvaultをDropboxと双方向同期（iOS対応）",
 	"author": "Faust-IA",
