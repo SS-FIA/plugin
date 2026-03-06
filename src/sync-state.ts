@@ -79,7 +79,7 @@ export function findByPath(
   vaultPath: string
 ): [string, FileSyncState] | null {
   for (const [id, entry] of Object.entries(state.files)) {
-    if (entry.path === vaultPath) return [id, entry];
+    if (entry.path.toLowerCase() === vaultPath.toLowerCase()) return [id, entry];
   }
   return null;
 }

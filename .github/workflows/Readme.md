@@ -1,0 +1,1 @@
+Difyを導入するにあたって必要な依存関係のあるツールは？DokerDesktop とnode.jpが必須なら諦めます

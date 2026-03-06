@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, copyFileSync } from "fs";
 const prod = process.argv[2] === "production";
 
 const TEST_VAULT_PLUGIN_DIR =
-  process.env.HOME + "/Documents/plugin-test/.obsidian/plugins/vault-sync-dropbox";
+  "/Users/t/Library/CloudStorage/Dropbox/60_TOOLS/plugin-test/.obsidian/plugins/vault-sync-dropbox";
 
 const ctx = await esbuild.context({
   entryPoints: ["src/main.ts"],

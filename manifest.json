@@ -4,7 +4,7 @@
   "version": "0.2.0",
   "minAppVersion": "1.4.0",
   "description": "ObsidianのvaultをDropboxと双方向同期（iOS対応）",
-  "author": "RegLex AI",
+  "author": "Faust-IA",
   "authorUrl": "",
   "isDesktopOnly": false
 }

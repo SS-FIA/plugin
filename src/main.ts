@@ -4,8 +4,6 @@ import {
   Plugin,
   requestUrl,
 } from "obsidian";
-import * as crypto from "crypto";
-import * as http from "http";
 import {
   DropboxSyncSettings,
   DEFAULT_SETTINGS,
@@ -19,8 +17,7 @@ import { SyncLogger } from "./sync-log";
 // 定数
 // ─────────────────────────────────────────────
 
-const REDIRECT_PORT   = 3000;
-const REDIRECT_URI    = `http://localhost:${REDIRECT_PORT}/callback`;
+const REDIRECT_URI = "obsidian://vault-sync-dropbox/oauth";
 const AUTH_TIMEOUT_MS = 5 * 60 * 1000;
 
 // ─────────────────────────────────────────────
@@ -31,7 +28,6 @@ export default class DropboxSyncPlugin extends Plugin {
   settings!: DropboxSyncSettings;
   client!: DropboxClient;  // 【FIX】全箇所でthis.clientに統一
 
-  private authServer: http.Server | null = null;
   private statusBarItem!: HTMLElement;
   private syncTimer: ReturnType<typeof setTimeout> | null = null;
   private syncEngine: SyncEngine | null = null;
@@ -84,7 +80,6 @@ export default class DropboxSyncPlugin extends Plugin {
 
   onunload() {
     this.statusBarItem.remove();
-    this.stopAuthServer();
     if (this.syncTimer) clearTimeout(this.syncTimer);
     this.syncEngine?.stop();
   }
@@ -192,15 +187,17 @@ export default class DropboxSyncPlugin extends Plugin {
   }
   
 	// ─── PKCE ヘルパー ────────────────────────────
-  
+
 	private generateCodeVerifier(): string {
-	  return crypto.randomBytes(32).toString("base64url");
+	  const array = new Uint8Array(32);
+	  window.crypto.getRandomValues(array);
+	  return base64urlEncode(array);
 	}
-  
+
 	private async generateCodeChallenge(verifier: string): Promise<string> {
 	  const data   = new TextEncoder().encode(verifier);
 	  const digest = await window.crypto.subtle.digest("SHA-256", data);
-	  return Buffer.from(digest).toString("base64url");
+	  return base64urlEncode(new Uint8Array(digest));
 	}
   
 	// ─── OAuth フロー ─────────────────────────────
@@ -210,33 +207,45 @@ export default class DropboxSyncPlugin extends Plugin {
 		new Notice("⚠ 設定画面でApp Keyを入力してください");
 		return;
 	  }
-  
-	  this.stopAuthServer();
-  
+
 	  const codeVerifier  = this.generateCodeVerifier();
 	  const codeChallenge = await this.generateCodeChallenge(codeVerifier);
-	  const state         = crypto.randomBytes(16).toString("hex");
+	  const stateBytes    = new Uint8Array(16);
+	  window.crypto.getRandomValues(stateBytes);
+	  const state         = Array.from(stateBytes).map(b => b.toString(16).padStart(2, "0")).join("");
 	  const authUrl       = this.buildAuthUrl(codeChallenge, state);
-  
-	  return new Promise<void>((resolve, reject) => {
-		const timer = setTimeout(() => {
-		  this.stopAuthServer();
-		  new Notice("⚠ 認証がタイムアウトしました（5分）");
-		  reject(new Error("OAuth timeout"));
-		}, AUTH_TIMEOUT_MS);
-  
-		this.startAuthServer(state, codeVerifier, () => {
-		  clearTimeout(timer);
-		  this.updateStatusBar();
-		  resolve();
-		}, (err) => {
-		  clearTimeout(timer);
-		  reject(err);
-		});
-  
-		window.open(authUrl);
-		new Notice("ブラウザでDropboxの認証を完了してください");
-	  });
+
+	  const timeoutId = setTimeout(() => {
+		new Notice("⚠ 認証がタイムアウトしました（5分）");
+	  }, AUTH_TIMEOUT_MS);
+
+	  this.registerObsidianProtocolHandler(
+		"vault-sync-dropbox/oauth",
+		async (params) => {
+		  clearTimeout(timeoutId);
+		  if (params.state !== state) {
+			new Notice("⚠ 認証エラー：stateが一致しません");
+			return;
+		  }
+		  if (params.error) {
+			new Notice(`⚠ 認証エラー：${params.error}`);
+			return;
+		  }
+		  if (!params.code) {
+			new Notice("⚠ 認証コードが取得できませんでした");
+			return;
+		  }
+		  try {
+			await this.exchangeCodeForToken(params.code, codeVerifier);
+			new Notice("✅ Dropboxに接続しました");
+		  } catch (e) {
+			new Notice(`❌ トークン取得失敗：${(e as Error).message}`);
+		  }
+		}
+	  );
+
+	  window.open(authUrl);
+	  new Notice("ブラウザでDropboxの認証を完了してください");
 	}
   
 	private buildAuthUrl(codeChallenge: string, state: string): string {
@@ -249,82 +258,6 @@ export default class DropboxSyncPlugin extends Plugin {
 	  url.searchParams.set("code_challenge_method", "S256");
 	  url.searchParams.set("state",                 state);
 	  return url.toString();
-	}
-  
-	// ─── コールバック受信サーバー ─────────────────
-  
-	private startAuthServer(
-	  expectedState: string,
-	  codeVerifier: string,
-	  onSuccess: () => void,
-	  onError: (err: Error) => void
-	) {
-	  this.authServer = http.createServer(async (req, res) => {
-		if (!req.url?.startsWith("/callback")) {
-		  res.writeHead(404); res.end("Not found"); return;
-		}
-  
-		const url   = new URL(req.url, `http://localhost:${REDIRECT_PORT}`);
-		const code  = url.searchParams.get("code");
-		const state = url.searchParams.get("state");
-		const error = url.searchParams.get("error");
-  
-		if (error) {
-		  this.respondHtml(res, 400, this.htmlPage("認証エラー",
-			`<p>エラー: <code>${error}</code></p>`));
-		  this.stopAuthServer();
-		  onError(new Error(`Dropbox OAuth error: ${error}`));
-		  return;
-		}
-  
-		if (state !== expectedState) {
-		  this.respondHtml(res, 400, this.htmlPage("不正なリクエスト",
-			"<p>stateパラメータが一致しません。</p>"));
-		  this.stopAuthServer();
-		  onError(new Error("State mismatch"));
-		  return;
-		}
-  
-		if (!code) {
-		  this.respondHtml(res, 400, this.htmlPage("エラー",
-			"<p>認証コードが取得できませんでした。</p>"));
-		  this.stopAuthServer();
-		  onError(new Error("No authorization code"));
-		  return;
-		}
-  
-		try {
-		  await this.exchangeCodeForToken(code, codeVerifier);
-		  this.respondHtml(res, 200, this.htmlPage("接続完了 ✅",
-			"<p>Dropboxとの接続が完了しました。<br>このタブを閉じてObsidianに戻ってください。</p>"));
-		  this.stopAuthServer();
-		  new Notice("✅ Dropboxに接続しました");
-		  onSuccess();
-		} catch (err) {
-		  this.respondHtml(res, 500, this.htmlPage("トークン取得失敗",
-			`<p>エラー: ${(err as Error).message}</p>`));
-		  this.stopAuthServer();
-		  onError(err as Error);
-		}
-	  });
-  
-	  this.authServer.on("error", (err: NodeJS.ErrnoException) => {
-		if (err.code === "EADDRINUSE") {
-		  new Notice(`⚠ ポート${REDIRECT_PORT}が使用中です`);
-		}
-		onError(err);
-	  });
-  
-	  this.authServer.listen(REDIRECT_PORT, "127.0.0.1", () => {
-		console.log(`DropboxSync: auth server listening on :${REDIRECT_PORT}`);
-	  });
-	}
-  
-	private stopAuthServer() {
-	  if (this.authServer) {
-		this.authServer.close();
-		this.authServer = null;
-	  }
 	}
   
 	// ─── トークン交換 ─────────────────────────────
@@ -400,19 +333,17 @@ export default class DropboxSyncPlugin extends Plugin {
 	  this.updateStatusBar();
 	  new Notice("Dropboxとの接続を解除しました");
 	}
-  
-	// ─── HTML ヘルパー ────────────────────────────
-  
-	private respondHtml(res: http.ServerResponse, status: number, html: string) {
-	  res.writeHead(status, { "Content-Type": "text/html; charset=utf-8" });
-	  res.end(html);
-	}
-  
-	private htmlPage(title: string, body: string): string {
-	  return `<!DOCTYPE html><html lang="ja"><head>
-  <meta charset="UTF-8">
-  <title>${title}</title>
-  <style>body{font-family:-apple-system,sans-serif;max-width:480px;margin:80px auto;text-align:center;color:#333;}code{background:#f0f0f0;padding:2px 6px;border-radius:4px;}</style>
-  </head><body><h1>${title}</h1>${body}</body></html>`;
-	}
   }
+
+// ─── Web Crypto ユーティリティ（Node.js 非依存）────────────────
+// btoa + Uint8Array を使った base64url エンコード
+// Node.js の Buffer/crypto に依存しないので iOS でも動作する
+
+function base64urlEncode(data: Uint8Array): string {
+  let binary = "";
+  data.forEach(b => (binary += String.fromCharCode(b)));
+  return btoa(binary)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=/g, "");
+}

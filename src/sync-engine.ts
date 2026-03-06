@@ -223,12 +223,12 @@ async flushSyncState(): Promise<void> {
       const { entries: dropboxFiles, finalCursor } = await this.listAllDropboxFiles();
       const localFiles = this.listAllLocalFiles();
 
-      const localMap = new Map(localFiles.map((f) => [f.path, f]));
+      const localMap = new Map(localFiles.map((f) => [f.path.toLowerCase(), f]));
       const dropboxMap = new Map(
         dropboxFiles
           .filter((e) => e[".tag"] === "file")
           .map((e) => [
-            this.dropboxToVaultPath(e.path_lower ?? e.path_display ?? ""),
+            this.dropboxToVaultPath(e.path_display ?? e.path_lower ?? ""),
             e,
           ])
       );
@@ -237,7 +237,7 @@ async flushSyncState(): Promise<void> {
       const toDownload: DropboxEntry[] = [];
       for (const [vaultPath, dbEntry] of dropboxMap) {
         if (!vaultPath || this.isExcluded(vaultPath)) continue;
-        const local = localMap.get(vaultPath);
+        const local = localMap.get(vaultPath.toLowerCase());
         const dbMtime = dbEntry.client_modified
           ? new Date(dbEntry.client_modified).getTime()
           : 0;
@@ -259,7 +259,7 @@ async flushSyncState(): Promise<void> {
       // ローカル → Dropbox（存在しないもの）
       for (const local of localFiles) {
         if (this.isExcluded(local.path)) continue;
-        if (!dropboxMap.has(local.path)) {
+        if (!dropboxMap.has(local.path.toLowerCase())) {
           await this.uploadFile(local.path, result);
         }
       }
@@ -399,6 +399,11 @@ async flushSyncState(): Promise<void> {
     }
 
     // 4. 両側変更 → conflictファイルを作成し、Dropbox版を本体に上書き
+    if (!existing) {
+      await this.downloadFile(vaultPath, result, dbEntry);
+      return;
+    }
+    // 5. 両側変更 → conflictファイルを作成し、Dropbox版を本体に上書き
     const conflictPath = makeConflictPath(vaultPath);
     const localData = await this.app.vault.adapter.readBinary(normalized);
     await this.app.vault.adapter.writeBinary(conflictPath, localData);
